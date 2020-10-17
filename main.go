@@ -14,7 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var done = make(chan struct{})
+var done = make(chan string)
 
 func onStateChanged(d gatt.Device, s gatt.State) {
 	fmt.Println("State:", s)
@@ -148,18 +148,21 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 		}
 		//fmt.Println()
 	}
-
-	waitSec := 15
+	waitSec := 5
 	fmt.Printf("Waiting for %d seconds to get some notifiations, if any.\n", waitSec)
 	time.Sleep(time.Duration(waitSec) * time.Second)
+
 }
 
 func onPeriphDisconnected(p gatt.Peripheral, err error) {
-	fmt.Println("Disconnected")
-	close(done)
+	p.Device().StopAdvertising()
+	name := p.Name()
+	fmt.Printf("Disconnected: '%s'.\n", name)
+	done <- name
 }
 
 func main() {
+
 	d, err := gatt.NewDevice(option.DefaultClientOptions...)
 	if err != nil {
 		log.Fatalf("Failed to open device, err: %s\n", err)
@@ -172,8 +175,17 @@ func main() {
 		gatt.PeripheralConnected(onPeriphConnected),
 		gatt.PeripheralDisconnected(onPeriphDisconnected),
 	)
+	for i := 0; i < 10; i++ {
+		d.Init(onStateChanged)
 
-	d.Init(onStateChanged)
-	<-done
+		device := <-done
+		fmt.Printf("Device %s is disconnected", device)
+
+		waitSec := 10
+		fmt.Printf("Sleep for %d seconds\n", waitSec)
+		time.Sleep(time.Duration(waitSec) * time.Second)
+	}
+	close(done)
+
 	fmt.Println("Done")
 }
