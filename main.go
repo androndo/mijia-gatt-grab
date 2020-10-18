@@ -3,6 +3,8 @@ package main
 import (
 	//"flag"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"net/http"
 	"strconv"
 
 	//"os"
@@ -11,10 +13,18 @@ import (
 
 	"github.com/paypal/gatt"
 	"github.com/paypal/gatt/examples/option"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 )
 
 var done = make(chan string)
+
+type SensorMeasurement struct {
+	Id string
+	CharacteristicName string
+	Value float64
+}
+var measurements = make(chan SensorMeasurement)
 
 func onStateChanged(d gatt.Device, s gatt.State) {
 	fmt.Println("State:", s)
@@ -123,14 +133,25 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 
 					// todo: check pattern
 					T, H := b[2:6], b[9:13]
-					fmt.Printf("%s ", time.Now().UTC())
-					if temperature, err := strconv.ParseFloat(string(T), 32); err == nil {
-						fmt.Printf("temperature %.1f, ", temperature)
+					msg := fmt.Sprintf("%s %s ", time.Now().UTC(), p.ID())
+					temperature, errT := strconv.ParseFloat(string(T), 32);
+
+					humidity, errH := strconv.ParseFloat(string(H), 32);
+					if errT != nil || errH != nil {
+						log.Println("Parsing sensor values was failed")
+						return
 					}
-					if humidity, err := strconv.ParseFloat(string(H), 32); err == nil {
-						fmt.Printf("humidity %.1f ", humidity)
+					measurements <- SensorMeasurement{
+						Id: p.ID(),
+						CharacteristicName: "temperature",
+						Value: temperature,
 					}
-					fmt.Println()
+					measurements <- SensorMeasurement{
+						Id: p.ID(),
+						CharacteristicName: "humidity",
+						Value: humidity,
+					}
+					fmt.Println(msg)
 				}
 				if err := p.SetNotifyValue(c, f); err != nil {
 					fmt.Printf("Failed to subscribe characteristic, err: %s\n", err)
@@ -148,10 +169,7 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 		}
 		//fmt.Println()
 	}
-	waitSec := 5
-	fmt.Printf("Waiting for %d seconds to get some notifiations, if any.\n", waitSec)
-	time.Sleep(time.Duration(waitSec) * time.Second)
-
+	sleepFor(5)
 }
 
 func onPeriphDisconnected(p gatt.Peripheral, err error) {
@@ -162,6 +180,14 @@ func onPeriphDisconnected(p gatt.Peripheral, err error) {
 }
 
 func main() {
+	sensorMeasurement := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "sensor_measurement",
+	},
+	[]string{"sensor_id", "characteristic"})
+	prometheus.MustRegister(sensorMeasurement)
+
+	http.Handle("/metrics", promhttp.Handler())
+	go http.ListenAndServe(":80", nil)
 
 	d, err := gatt.NewDevice(option.DefaultClientOptions...)
 	if err != nil {
@@ -175,17 +201,42 @@ func main() {
 		gatt.PeripheralConnected(onPeriphConnected),
 		gatt.PeripheralDisconnected(onPeriphDisconnected),
 	)
-	for i := 0; i < 10; i++ {
+
+	go func() {
+		for {
+			select {
+			case m, ok := <-measurements:
+				if ok {
+					// Value was read
+					sensorMeasurement.WithLabelValues(m.Id, m.CharacteristicName).Set(m.Value)
+				} else {
+					// Channel closed
+					break
+				}
+			default:
+				// No value ready, moving on
+				sleepFor(5)
+			}
+		}
+	}()
+
+	for i := 0; i < 3; i++ {
 		d.Init(onStateChanged)
 
 		device := <-done
 		fmt.Printf("Device %s is disconnected", device)
 
-		waitSec := 10
-		fmt.Printf("Sleep for %d seconds\n", waitSec)
-		time.Sleep(time.Duration(waitSec) * time.Second)
+		sleepFor(5)
 	}
+
+	sleepFor(5)
 	close(done)
+	close(measurements)
 
 	fmt.Println("Done")
+}
+
+func sleepFor(seconds int) {
+	fmt.Printf("Sleep for %d seconds\n", seconds)
+	time.Sleep(time.Duration(seconds) * time.Second)
 }
