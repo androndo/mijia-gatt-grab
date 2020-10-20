@@ -17,7 +17,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var done = make(chan string)
+var closedDevices = make(chan string)
 
 type SensorMeasurement struct {
 	Id string
@@ -72,11 +72,6 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 	}
 
 	for _, s := range ss {
-		//msg := "Service: " + s.UUID().String()
-		//if len(s.Name()) > 0 {
-		//	msg += " (" + s.Name() + ")"
-		//}
-		//fmt.Println(msg)
 
 		// Discovery characteristics
 		cs, err := p.DiscoverCharacteristics(nil, s)
@@ -86,13 +81,6 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 		}
 
 		for _, c := range cs {
-			//msg := "  Characteristic  " + c.UUID().String()
-			//if len(c.Name()) > 0 {
-			//	msg += " (" + c.Name() + ")"
-			//}
-			//msg += "\n    properties    " + c.Properties().String()
-			//fmt.Println(msg)
-
 			// Read the characteristic, if possible.
 			if (c.Properties() & gatt.CharRead) != 0 {
 				//b, err := p.ReadCharacteristic(c)
@@ -109,22 +97,6 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 				fmt.Printf("Failed to discover descriptors, err: %s\n", err)
 				continue
 			}
-
-			//for _, d := range ds {
-			//	msg := "  Descriptor      " + d.UUID().String()
-			//	if len(d.Name()) > 0 {
-			//		msg += " (" + d.Name() + ")"
-			//	}
-			//	fmt.Println(msg)
-			//
-			//	// Read descriptor (could fail, if it's not readable)
-			//	b, err := p.ReadDescriptor(d)
-			//	if err != nil {
-			//		fmt.Printf("Failed to read descriptor, err: %s\n", err)
-			//		continue
-			//	}
-			//	fmt.Printf("    value         %x | %q\n", b, b)
-			//}
 
 			// Subscribe the characteristic, if possible.
 			if (c.Properties() & (gatt.CharNotify | gatt.CharIndicate)) != 0 {
@@ -157,17 +129,8 @@ func onPeriphConnected(p gatt.Peripheral, err error) {
 					fmt.Printf("Failed to subscribe characteristic, err: %s\n", err)
 					continue
 				}
-
-				//msg := "  Subscribed characteristic  " + c.UUID().String()
-				//if len(c.Name()) > 0 {
-				//	msg += " (" + c.Name() + ")"
-				//}
-				//msg += "\n    properties    " + c.Properties().String()
-				//fmt.Println(msg)
 			}
-
 		}
-		//fmt.Println()
 	}
 	sleepFor(5)
 }
@@ -176,10 +139,11 @@ func onPeriphDisconnected(p gatt.Peripheral, err error) {
 	p.Device().StopAdvertising()
 	name := p.Name()
 	fmt.Printf("Disconnected: '%s'.\n", name)
-	done <- name
+	closedDevices <- name
 }
 
 func main() {
+
 	sensorMeasurement := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "sensor_measurement",
 	},
@@ -220,17 +184,17 @@ func main() {
 		}
 	}()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		d.Init(onStateChanged)
 
-		device := <-done
+		device := <-closedDevices
 		fmt.Printf("Device %s is disconnected", device)
 
 		sleepFor(5)
 	}
 
 	sleepFor(5)
-	close(done)
+	close(closedDevices)
 	close(measurements)
 
 	fmt.Println("Done")
