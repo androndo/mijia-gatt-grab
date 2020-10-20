@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	//"os"
 	"strings"
@@ -18,6 +21,8 @@ import (
 )
 
 var closedDevices = make(chan string)
+var osSignals = make(chan os.Signal, 1)
+var done = make(chan bool, 1)
 
 type SensorMeasurement struct {
 	Id string
@@ -143,6 +148,7 @@ func onPeriphDisconnected(p gatt.Peripheral, err error) {
 }
 
 func main() {
+	signal.Notify(osSignals, syscall.SIGINT, syscall.SIGTERM)
 
 	sensorMeasurement := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "sensor_measurement",
@@ -166,7 +172,25 @@ func main() {
 		gatt.PeripheralDisconnected(onPeriphDisconnected),
 	)
 
-	go func() {
+	go receiveMeasurements(sensorMeasurement)()
+	grabDevices(d)
+
+	closeAll()
+}
+
+func closeAll() {
+	fmt.Println("Wait a moment before...")
+	sleepFor(5)
+
+	close(closedDevices)
+	close(measurements)
+	close(osSignals)
+
+	fmt.Println("Done")
+}
+
+func receiveMeasurements(sensorMeasurement *prometheus.GaugeVec) func() {
+	return func() {
 		for {
 			select {
 			case m, ok := <-measurements:
@@ -175,29 +199,33 @@ func main() {
 					sensorMeasurement.WithLabelValues(m.Id, m.CharacteristicName).Set(m.Value)
 				} else {
 					// Channel closed
-					break
+					return
 				}
 			default:
 				// No value ready, moving on
 				sleepFor(5)
 			}
 		}
-	}()
-
-	for i := 0; i < 10; i++ {
-		d.Init(onStateChanged)
-
-		device := <-closedDevices
-		fmt.Printf("Device %s is disconnected", device)
-
-		sleepFor(5)
 	}
+}
 
-	sleepFor(5)
-	close(closedDevices)
-	close(measurements)
+func grabDevices(d gatt.Device) {
+	for {
+		if err := d.Init(onStateChanged); err == nil {
+			device := <-closedDevices
+			fmt.Printf("Device %s is disconnected\n", device)
+		} else {
+			fmt.Println(err)
+		}
 
-	fmt.Println("Done")
+		select {
+		case s, _ := <-osSignals:
+			fmt.Printf("Received %s, shutdown...\n", s)
+			return
+		default:
+			sleepFor(5)
+		}
+	}
 }
 
 func sleepFor(seconds int) {
